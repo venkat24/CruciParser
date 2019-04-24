@@ -22,7 +22,7 @@ const positiveReplies = [
     "ADHE",
     "ADHEY",
     "CORRECT",
-  ];
+];
 
 const negativeReplies = [
 "NOPE",

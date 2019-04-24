@@ -167,16 +167,22 @@ const rankAndFilterPossibleAnswers = (answers) => {
  * Scan through a set of messages after the given clue and try to find an answer
  * 
  * @param {Array[Message]} messages 
- * @param {Integer} message_index 
- * @param {Integer} searchDepth 
- * @param {Boolean} allowEarlyExit 
+ * @param {Integer} messageIndex 
+ * @param {Integer} searchDepth How many messages down should we search?
+ * @param {Boolean} allowEarlyExit Should we stop if we find a "YES" ?
  */
-const scanMessagesForAnswer = (messages, message_index, searchDepth = 5, allowEarlyExit = true) => {
+const scanMessagesForAnswer = (messages, messageIndex, searchDepth = 5, allowEarlyExit = true) => {
   let possibleAnswers = [];
-  let currMessage = messages[message_index];
+
+  // Get the current clue
+  let currMessage = messages[messageIndex];
   const currEnum = currMessage.enumVals;
-  const searchLimit = Math.min(message_index + searchDepth, messages.length);
-  for (let j = message_index + 1; j < searchLimit; j++) {
+  
+  // Search till the limit or the end of the chat
+  const searchLimit = Math.min(messageIndex + searchDepth, messages.length);
+  
+  for (let j = messageIndex + 1; j < searchLimit; j++) {
+    // If this message itself is a clue, it's probably not the answer
     if (messages[j].clue) {
       continue;
     }
@@ -184,17 +190,20 @@ const scanMessagesForAnswer = (messages, message_index, searchDepth = 5, allowEa
     const checkAnswer = messages[j].message;
 
     // If current statement is something like a "Yes!", then it's very
-    // likely that the previous statement contained the answer
-    if (allowEarlyExit && isPositiveStatement(checkAnswer) && j > message_index + 2) {
+    // likely that one of the previous statements contained the answer
+    if (allowEarlyExit && isPositiveStatement(checkAnswer) && j > messageIndex + 2) {
 
       // Track backwards, checking for possible answers..
-      for (let k = j - 1; k > message_index; --k) {
+      for (let k = j - 1; k > messageIndex; --k) {
+        // If this message contains special chars like - or ~, it's probably an anno, not an answer
         if (isProbablyAnAnnoClue(messages[k].message)) {
           continue;
         }
+        
         possibleAnswers = checkForPossibleAnswersInClue(messages[k].message, currEnum);
         if (possibleAnswers.length > 0) {
           // We've found the first plausible answer, from tracking back from before the affirmative
+          // Stop and return the current set of possible answers
           break;
         }
       }
@@ -202,24 +211,35 @@ const scanMessagesForAnswer = (messages, message_index, searchDepth = 5, allowEa
       break;
     }
 
+    // Add to our list of possible answers and keep searching downwards
     const currPossibleAnswers = checkForPossibleAnswersInClue(checkAnswer, currEnum);
-
     possibleAnswers = possibleAnswers.concat(currPossibleAnswers);
   }
 
+  // Filter the most likely answers from the list and return
   possibleAnswers = rankAndFilterPossibleAnswers(possibleAnswers).slice(0, 3);
   currMessage.possibleAnswers = possibleAnswers;
 
   return currMessage;
 }
 
+/**
+ * This method invokes scanMessagesForAnswer. It increases the depth and searches once
+ * again if no feasible answer was found
+ * 
+ * @param {Array[Message]} messages 
+ */
 const tryFindingAnswersUsingContext = (messages) => {
   for (let i = 0; i < messages.length; ++i) {
     let currMessage = messages[i];
+
+    // For every clue...
     if (currMessage.clue) {
       let searchDepth = 7;
       currMessage = scanMessagesForAnswer(messages, i, searchDepth);
-      while (currMessage.possibleAnswers.length == 0 && searchDepth < 20) {
+
+      // While we have no answer, keep searching farther and farther
+      while (currMessage.possibleAnswers.length == 0 && searchDepth < 25) {
         searchDepth += 5;
         currMessage = scanMessagesForAnswer(messages, i, searchDepth);
       }
@@ -229,6 +249,14 @@ const tryFindingAnswersUsingContext = (messages) => {
   return messages;
 };
 
+/**
+ * A last ditch search for answers, by invoking scanMessagesForAnswer incrementally
+ * without an early exit, meaning this is a brute force search for anything that
+ * matches the enum. Not ideal, but can help find some answers in cases where
+ * clues are closed very late.
+ * 
+ * @param {Array[Message]} messages 
+ */
 const tryFindingAnswersUsingContextAttempt2 = (messages) => {
   for (let i = 0; i < messages.length; ++i) {
     let currMessage = messages[i];
@@ -245,22 +273,43 @@ const tryFindingAnswersUsingContextAttempt2 = (messages) => {
   return messages;
 };
 
+/**
+ * Removes clues that are too short
+ * 
+ * TODO: Improve this method to weed out other false positive clues
+ * 
+ * @param {String} clue 
+ */
 const isProbablyAGoodClue = (clue) => {
   if (clue.length > 6) return true;
 
   return false;
 };
 
+/// Main
 const main = async () => {
+
+  // Parse the chats file
   let messages = await whatsapp.parseFile("chats.txt");
+
+  // Process messages by removing system messges and splitting multiline messages
   messages = preprocessMessages(messages);
+
+  // Flag the clues as message.clue = true
   messages = markClues(messages);
+
+  // Try finding answers by using the subsequent messages
   messages = tryFindingAnswersUsingContext(messages);
+
+  // A more bute force search in case we couldn't find any answer in the previous step
   messages = tryFindingAnswersUsingContextAttempt2(messages);
 
+  // Filter out just the clues now
   let clueMessages = messages.filter(message => message.clue);
   console.log(clueMessages);
   console.log("Found ", clueMessages.length, " clues!");
+
+  // Clean it up to write to CSV
   clueMessages = clueMessages.map(({date, author, message, enumVals, enumTotal, possibleAnswers}) => {
     return {
       date,
@@ -274,6 +323,7 @@ const main = async () => {
     };
   });
 
+  // Dump data as CSV
   let parser = new json2csv.Parser({fields: Object.keys(clueMessages[0])});
   const csvdata = parser.parse(clueMessages);
 
@@ -281,6 +331,8 @@ const main = async () => {
     console.err("CSV Write issue!");
   });
   console.log("Clues written to out.csv");
+
+  // ENDE!
 };
 
 main();

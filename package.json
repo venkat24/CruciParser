@@ -1,0 +1,23 @@
+{
+  "name": "cruciparser",
+  "version": "1.0.0",
+  "description": "Script to parse all Cryptic Crossword clues from the HTML dump of a WhatsApp Web group. Writes clues and respective authors to a CSV file.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/venkat24/CruciParser.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/venkat24/CruciParser/issues"
+  },
+  "homepage": "https://github.com/venkat24/CruciParser#readme",
+  "dependencies": {
+    "json2csv": "^4.5.0",
+    "whatsapp-chat-parser": "^1.2.2"
+  }
+}

@@ -41,7 +41,7 @@ This project aims to filter out just the clues and organize them, and also guess
 
 From the given chat data, this program generates JSON  that looks like -
 
-```json
+```javascript
 [ { date: 2019-04-18T05:07:00.000Z,
     author: 'Shivesh',
     message: 'Pampered and cuddled with third wife (5,3)',

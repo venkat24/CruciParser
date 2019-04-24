@@ -1,49 +1,25 @@
 const whatsapp = require('whatsapp-chat-parser');
 const json2csv = require('json2csv');
 const fs = require('fs');
+const { getEnum, isPositiveStatement, isProbablyAnAnnoClue } = require('./utils');
 
-const positiveReplies = [
-  "👍",
-  "👍🏻",
-  "👍🏼",
-  "👍🏽",
-  "👍🏾",
-  "👍🏿",
-  "YES",
-  "YESS",
-  "YESSS",
-  "YEAH",
-  "YEAHH",
-  "YUP",
-  "YUPP",
-  "YUPPP",
-  "YEH",
-  "YAH",
-  "YAS",
-  "YEP",
-  "YEPP",
-  "NICE",
-  "ADHE",
-  "ADHEY",
-  "CORRECT",
-];
-
-const negativeReplies = [
-  "NOPE",
-  "NO",
-  "NOT WHAT I",
-  "NOT REALLY"
-];
-
+/**
+ * This method removes extraneus messages like "Venkatraman Srikanth joined the group"
+ * and also splits up multi-line messages, so that multiple clues sent as a single
+ * message will be parsed independently
+ * 
+ * @param {Array[Message]} messages 
+ */
 const preprocessMessages = (messages) => {
   let processedMessages = [];
+
   for (const msg of messages) {
-    if (msg.message === "This message was deleted") {
+    // Remove system messages
+    if (msg.message === "This message was deleted" || msg.author == "System") {
       continue;
     }
-    if (msg.author == "System") {
-      continue;
-    }
+
+    // Split multi-line messages as independent messages
     if (msg.message.includes('\n')) {
       const splitMessages = msg.message.split("\n");
       for (const splitMessage of splitMessages) {
@@ -61,17 +37,26 @@ const preprocessMessages = (messages) => {
   return processedMessages;
 };
 
-const getEnum = (enumString) => {
-  enumString = enumString.substring(1, enumString.length - 1);
-  enumArray = enumString.replace(/-/g, ',').split(',').map(e => parseInt(e));
-  return enumArray;
-};
-
+/**
+ * Mark clues will mark messages that are crossword clues with message.clue = true
+ * It searches for clues having an enum marker. If the message does contain a clue,
+ * then the enum is also fetched.
+ * 
+ * @param {Array[Message]} messages
+ */
 const markClues = (messages) => {
+  // Regular expression to find clues that contain an enum like (8) or (4,5,7)
+  // Matches '(', then 0 or more instances of a set of digits followd by a comma, and then
+  // matches a single set of digits, and finally ')'
   const regex = /\((\d*(,|-))*(\d*)\)/;
+
+  // Transform each message as..
   return messages.map((msg) => {
     const match = msg.message.match(regex);
+
+    // If there's a match and the clue is not an obvious false positive..
     if (match && isProbablyAGoodClue(msg.message)) {
+      // Get enum and calculate the enum total
       const enumVals = getEnum(match[0]);
       const enumTotal = enumVals.reduce((p, acc) => p + acc);
       return {...msg, clue: true, enumVals: getEnum(match[0]), enumTotal}
@@ -81,37 +66,28 @@ const markClues = (messages) => {
   });
 };
 
-const isPositiveStatement = (answer) => {
-  answer = answer.replace(/[&\/\\#,+()$~%.'":*?<>{}]/g, '').toUpperCase();
-  const words = answer.split(" ");
-  for (const word of words) {
-    if (positiveReplies.indexOf(word) >= 0) {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-const isProbablyAnAnnoClue = (clue) => {
-  const annoChars = ["-", ">", "<", "~", "*", "+", "←"];
-  for (const char of annoChars) {
-    if (clue.indexOf(char) >= 0) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
+/**
+ * Given a message, check if this message contains an answer that satisfies the
+ * given enum. This method blindly returns any words in the given message that
+ * matches the enum, there is no other consideration.
+ * 
+ * @param {String} answer Message that could possibly contain the answer
+ * @param {Array[Integer]} enumVals Enum to search for in the message
+ */
 const checkForPossibleAnswersInClue = (answer, enumVals) => {
+  // Strip special characters and convert to uppercase
   answer = answer.replace(/[^a-zA-Z ]/g, "").toUpperCase();
   const words = answer.split(" ");
+
+  // For multi word enums, we match each subsequent word by incrementing this
   let enumPtr = 0;
 
   let result = [];
   let currWord = "";
+
   for (let i = 0; i < words.length; ++i) {
+
+    // We have a complete match! Clear and keep searching
     if (enumPtr == enumVals.length) {
       result.push(currWord.trim());
       currWord = "";
@@ -119,49 +95,66 @@ const checkForPossibleAnswersInClue = (answer, enumVals) => {
     }
     const word = words[i];
     currWord += word;
+
     if (word.length == enumVals[enumPtr]) {
+      // We have a match with the current word of the enum. Increment and keep looking
       enumPtr++;
       currWord += " ";
     } else {
+      // No match. Clear.
       currWord = "";
       enumPtr = 0;
     }
   }
+
+  // Handle the case where the answer is at the end of the message, or is the entire message
   if (enumPtr == enumVals.length) {
     result.push(currWord.trim());
   }
+
   return result;
 };
 
+/**
+ * We rank answers based on frequency, and also omit some common positive replies like "YES"
+ * and "YEAH" that could have been potentially been identified as correct answers. The ranking
+ * is simply based on which words occur more. If a word doesn't occur much, it's removed
+ * 
+ * @param {Array[String]} answers Set of answers
+ */
 const rankAndFilterPossibleAnswers = (answers) => {
+  // If there are no answers, return trivially
   if (answers.length == 0) {
     return answers;
   }
 
-  let ranks = {};
+  // Create a map of words with their frequencies
+  let frequencies = {};
   for (const answer of answers) {
     if (isPositiveStatement(answer)) {
       continue;
     }
   
-    if (answer in ranks) {
-      ranks[answer]++;
+    if (answer in frequencies) {
+      frequencies[answer]++;
     } else {
-      ranks[answer] = 0;
+      frequencies[answer] = 0;
     }
   }
 
+  // Find the one word with maximum occurences
   let max_rank = 0;
-  for (const answer in ranks) {
-    const rank = ranks[answer];
+  for (const answer in frequencies) {
+    const rank = frequencies[answer];
     if (rank > max_rank) {
       max_rank = rank;
     }
   };
 
+  // Choose only the answers with maximum frequency
   let result = [];
-  for (const answer in ranks) {
-    const rank = ranks[answer];
+  for (const answer in frequencies) {
+    const rank = frequencies[answer];
     if (rank == max_rank) {
       result.push(answer);
     }
@@ -170,6 +163,14 @@ const rankAndFilterPossibleAnswers = (answers) => {
   return result;
 };
 
+/**
+ * Scan through a set of messages after the given clue and try to find an answer
+ * 
+ * @param {Array[Message]} messages 
+ * @param {Integer} message_index 
+ * @param {Integer} searchDepth 
+ * @param {Boolean} allowEarlyExit 
+ */
 const scanMessagesForAnswer = (messages, message_index, searchDepth = 5, allowEarlyExit = true) => {
   let possibleAnswers = [];
   let currMessage = messages[message_index];
@@ -258,6 +259,8 @@ const main = async () => {
   messages = tryFindingAnswersUsingContextAttempt2(messages);
 
   let clueMessages = messages.filter(message => message.clue);
+  console.log(clueMessages);
+  console.log("Found ", clueMessages.length, " clues!");
   clueMessages = clueMessages.map(({date, author, message, enumVals, enumTotal, possibleAnswers}) => {
     return {
       date,
@@ -277,6 +280,7 @@ const main = async () => {
   fs.writeFileSync("out.csv", csvdata, (err) => {
     console.err("CSV Write issue!");
   });
+  console.log("Clues written to out.csv");
 };
 
 main();
